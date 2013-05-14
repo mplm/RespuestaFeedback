@@ -1,0 +1,473 @@
+# HG changeset patch
+# Parent 5c8e89c9eb330a803b7c8c989473f43fb0308129
+# User Fernando Jiménez <ferjmoreno@gmail.com>
+
+diff --git a/b2g/components/UpdatePrompt.js b/b2g/components/UpdatePrompt.js
+--- a/b2g/components/UpdatePrompt.js
++++ b/b2g/components/UpdatePrompt.js
+@@ -8,16 +8,22 @@
+ const Cc = Components.classes;
+ const Ci = Components.interfaces;
+ const Cu = Components.utils;
+ const Cr = Components.results;
+ 
+ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+ Cu.import("resource://gre/modules/Services.jsm");
+ 
++#ifdef MOZ_B2G_RIL
++XPCOMUtils.defineLazyServiceGetter(this, "ril",
++                                   "@mozilla.org/ril/content-helper;1",
++                                   "nsIRILContentHelper");
++#endif
++
+ const VERBOSE = 1;
+ let log =
+   VERBOSE ?
+   function log_dump(msg) { dump("UpdatePrompt: "+ msg +"\n"); } :
+   function log_noop(msg) { };
+ 
+ const PREF_APPLY_PROMPT_TIMEOUT          = "b2g.update.apply-prompt-timeout";
+ const PREF_APPLY_IDLE_TIMEOUT            = "b2g.update.apply-idle-timeout";
+@@ -102,16 +108,17 @@ UpdateCheckListener.prototype = {
+     Services.aus.QueryInterface(Ci.nsIUpdateCheckListener);
+     Services.aus.onProgress(request, position, totalSize);
+   }
+ };
+ 
+ function UpdatePrompt() {
+   this.wrappedJSObject = this;
+   this._updateCheckListener = new UpdateCheckListener(this);
++  this._imei = null;
+   Services.obs.addObserver(this, "update-check-start", false);
+ }
+ 
+ UpdatePrompt.prototype = {
+   classID: Components.ID("{88b3eb21-d072-4e3b-886d-f89d8c49fe59}"),
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIUpdatePrompt,
+                                          Ci.nsIUpdateCheckListener,
+                                          Ci.nsIRequestObserver,
+@@ -390,20 +397,33 @@ UpdatePrompt.prototype = {
+         aUpdate.statusText = "fota-reboot-failed";
+         this.showUpdateError(aUpdate);
+       }
+     }
+   },
+ 
+   forceUpdateCheck: function UP_forceUpdateCheck() {
+     log("Forcing update check");
+-
+     let checker = Cc["@mozilla.org/updates/update-checker;1"]
+-                    .createInstance(Ci.nsIUpdateChecker);
+-    checker.checkForUpdates(this._updateCheckListener, true);
++                  .createInstance(Ci.nsIUpdateChecker);
++    if (this._imei != null) {
++      log("Already have the imei " + this._imei);
++      checker.checkForUpdates(this._updateCheckListener, true, this._imei);
++    }
++    let window = Services.wm.getMostRecentWindow("navigator:browser");
++    let req = ril.getIMEI(window);
++    req.onsuccess = (function onImei(evt) {
++      this._imei = evt.target.result;
++      log("Got imei " + this._imei);
++      checker.checkForUpdates(this._updateCheckListener, true, this._imei);
++    }).bind(this);
++    req.onerror = (function onError(evt) {
++      dump("Error getting IMEI " + evt.target.error.name + "\n");
++      checker.checkForUpdates(this._updateCheckListener, true, "");
++    }).bind(this);
+   },
+ 
+   handleEvent: function UP_handleEvent(evt) {
+     if (evt.type !== "mozContentEvent") {
+       return;
+     }
+ 
+     let detail = evt.detail;
+diff --git a/dom/system/gonk/RILContentHelper.js b/dom/system/gonk/RILContentHelper.js
+--- a/dom/system/gonk/RILContentHelper.js
++++ b/dom/system/gonk/RILContentHelper.js
+@@ -63,16 +63,18 @@ const RIL_IPC_MSG_NAMES = [
+   "RIL:SelectNetwork",
+   "RIL:SelectNetworkAuto",
+   "RIL:CallStateChanged",
+   "RIL:VoicemailNotification",
+   "RIL:VoicemailInfoChanged",
+   "RIL:CallError",
+   "RIL:CardLockResult",
+   "RIL:USSDReceived",
++  "RIL:GetIMEI:Return:OK",
++  "RIL:GetIMEI:Return:KO",
+   "RIL:SendMMI:Return:OK",
+   "RIL:SendMMI:Return:KO",
+   "RIL:CancelMMI:Return:OK",
+   "RIL:CancelMMI:Return:KO",
+   "RIL:StkCommand",
+   "RIL:StkSessionEnd",
+   "RIL:DataError",
+   "RIL:SetCallForwardingOption",
+@@ -532,16 +534,28 @@ RILContentHelper.prototype = {
+                                   Cr.NS_ERROR_UNEXPECTED);
+     }
+     let request = Services.DOMRequest.createRequest(window);
+     info.requestId = this.getRequestId(request);
+     cpmm.sendAsyncMessage("RIL:SetCardLock", info);
+     return request;
+   },
+ 
++  getIMEI: function getIMEI(window) {
++    debug("Get IMEI");
++    if (!window) {
++      throw Components.Exception("Can't get window object",
++                                 Cr.NS_ERROR_EXPECTED);
++    }
++    let request = Services.DOMRequest.createRequest(window);
++    let requestId = this.getRequestId(request);
++    cpmm.sendAsyncMessage("RIL:GetIMEI", {requestId: requestId});
++    return request;
++  },
++
+   sendMMI: function sendMMI(window, mmi) {
+     debug("Sending MMI " + mmi);
+     if (!window) {
+       throw Components.Exception("Can't get window object",
+                                  Cr.NS_ERROR_EXPECTED);
+     }
+     let request = Services.DOMRequest.createRequest(window);
+     let requestId = this.getRequestId(request);
+@@ -958,16 +972,30 @@ RILContentHelper.prototype = {
+           this.fireRequestError(msg.json.requestId, msg.json.errorMsg);
+         }
+         break;
+       case "RIL:USSDReceived":
+         let res = JSON.stringify({message: msg.json.message,
+                                   sessionEnded: msg.json.sessionEnded});
+         Services.obs.notifyObservers(null, kUssdReceivedTopic, res);
+         break;
++      case "RIL:GetIMEI:Return:OK":
++        debug("RIL:GetIMEI:Return:OK " + JSON.stringify(msg.json));
++        request = this.takeRequest(msg.json.requestId);
++        if (request) {
++          Services.DOMRequest.fireSuccess(request, msg.json.result);
++        }
++        break;
++      case "RIL:GetIMEI:Return:KO":
++        debug("RIL:GetIMEI:Return:KO " + JSON.stringify(msg.json));
++        request = this.takeRequest(msg.json.requestId);
++        if (request) {
++          Services.DOMRequest.fireError(request, msg.json.errorMsg);
++        }
++        break;
+       case "RIL:SendMMI:Return:OK":
+       case "RIL:CancelMMI:Return:OK":
+         this.handleSendCancelMMIOK(msg.json);
+         break;
+       case "RIL:SendMMI:Return:KO":
+       case "RIL:CancelMMI:Return:KO":
+         request = this.takeRequest(msg.json.requestId);
+         if (request) {
+diff --git a/dom/system/gonk/RadioInterfaceLayer.js b/dom/system/gonk/RadioInterfaceLayer.js
+--- a/dom/system/gonk/RadioInterfaceLayer.js
++++ b/dom/system/gonk/RadioInterfaceLayer.js
+@@ -85,16 +85,17 @@ const RIL_IPC_TELEPHONY_MSG_NAMES = [
+ const RIL_IPC_MOBILECONNECTION_MSG_NAMES = [
+   "RIL:GetRilContext",
+   "RIL:GetAvailableNetworks",
+   "RIL:SelectNetwork",
+   "RIL:SelectNetworkAuto",
+   "RIL:GetCardLock",
+   "RIL:UnlockCardLock",
+   "RIL:SetCardLock",
++  "RIL:GetIMEI",
+   "RIL:SendMMI",
+   "RIL:CancelMMI",
+   "RIL:SendStkResponse",
+   "RIL:SendStkMenuSelection",
+   "RIL:SendStkTimerExpiration",
+   "RIL:SendStkEventDownload",
+   "RIL:RegisterMobileConnectionMsg",
+   "RIL:SetCallForwardingOption",
+@@ -451,16 +452,20 @@ RadioInterfaceLayer.prototype = {
+       case "RIL:UnlockCardLock":
+         this.saveRequestTarget(msg);
+         this.unlockCardLock(msg.json);
+         break;
+       case "RIL:SetCardLock":
+         this.saveRequestTarget(msg);
+         this.setCardLock(msg.json);
+         break;
++      case "RIL:GetIMEI":
++        this.saveRequestTarget(msg);
++        this.getIMEI(msg.json.requestId);
++        break;
+       case "RIL:SendMMI":
+         this.saveRequestTarget(msg);
+         this.sendMMI(msg.json);
+         break;
+       case "RIL:CancelMMI":
+         this.saveRequestTarget(msg);
+         this.cancelMMI(msg.json);
+         break;
+@@ -622,16 +627,19 @@ RadioInterfaceLayer.prototype = {
+         break;
+       case "iccmbdn":
+         this.handleICCMbdn(message);
+         break;
+       case "USSDReceived":
+         debug("USSDReceived " + JSON.stringify(message));
+         this.handleUSSDReceived(message);
+         break;
++      case "getIMEI":
++        this.handleGetIMEI(message);
++        break;
+       case "sendMMI":
+       case "sendUSSD":
+         this.handleSendMMI(message);
+         break;
+       case "cancelMMI":
+       case "cancelUSSD":
+         this.handleCancelMMI(message);
+         break;
+@@ -1675,16 +1683,23 @@ RadioInterfaceLayer.prototype = {
+   },
+ 
+   handleUSSDReceived: function handleUSSDReceived(ussd) {
+     debug("handleUSSDReceived " + JSON.stringify(ussd));
+     gSystemMessenger.broadcastMessage("ussd-received", ussd);
+     this._sendTargetMessage("mobileconnection", "RIL:USSDReceived", ussd);
+   },
+ 
++  handleGetIMEI: function handleGetIMEI(message) {
++    debug("handleGetIMEI " + JSON.stringify(message));
++    let messageType = message.success ? "RIL:GetIMEI:Return:OK" :
++                                        "RIL:GetIMEI:Return:KO";
++    this._sendRequestResults(messageType, message);
++  },
++
+   handleSendMMI: function handleSendMMI(message) {
+     debug("handleSendMMI " + JSON.stringify(message));
+     let messageType = message.success ? "RIL:SendMMI:Return:OK" :
+                                         "RIL:SendMMI:Return:KO";
+     this._sendRequestResults(messageType, message);
+   },
+ 
+   handleCancelMMI: function handleCancelMMI(message) {
+@@ -1968,16 +1983,21 @@ RadioInterfaceLayer.prototype = {
+                              callIndex: callIndex});
+   },
+ 
+   getAvailableNetworks: function getAvailableNetworks(requestId) {
+     this.worker.postMessage({rilMessageType: "getAvailableNetworks",
+                              requestId: requestId});
+   },
+ 
++  getIMEI: function getIMEI(requestId) {
++    this.worker.postMessage({rilMessageType: "getIMEI",
++                             requestId: requestId});
++  },
++
+   sendMMI: function sendMMI(message) {
+     debug("SendMMI " + JSON.stringify(message));
+     message.rilMessageType = "sendMMI";
+     this.worker.postMessage(message);
+   },
+ 
+   cancelMMI: function cancelMMI(message) {
+     // Some MMI codes trigger radio operations, but unfortunately the RIL only
+diff --git a/dom/system/gonk/nsIRadioInterfaceLayer.idl b/dom/system/gonk/nsIRadioInterfaceLayer.idl
+--- a/dom/system/gonk/nsIRadioInterfaceLayer.idl
++++ b/dom/system/gonk/nsIRadioInterfaceLayer.idl
+@@ -149,17 +149,17 @@ interface nsIRILCellBroadcastCallback : 
+    */
+   void notifyMessageReceived(in nsIDOMMozCellBroadcastMessage message);
+ };
+ 
+ /**
+  * Helper that runs in the content process and exposes information
+  * to the DOM.
+  */
+-[scriptable, uuid(8c35c286-7a84-410d-9b36-b15f2cadf78f)]
++[scriptable, uuid(0e80c594-279a-406a-aa7a-b82bc79ef672)]
+ interface nsIRILContentHelper : nsIMobileConnectionProvider
+ {
+   void registerTelephonyCallback(in nsIRILTelephonyCallback callback);
+   void unregisterTelephonyCallback(in nsIRILTelephonyCallback callback);
+ 
+   void registerVoicemailCallback(in nsIRILVoicemailCallback callback);
+   void unregisterVoicemailCallback(in nsIRILVoicemailCallback callback);
+ 
+@@ -212,16 +212,18 @@ interface nsIRILContentHelper : nsIMobil
+   void startTone(in DOMString dtmfChar);
+   void stopTone();
+ 
+   void answerCall(in unsigned long callIndex);
+   void rejectCall(in unsigned long callIndex);
+   void holdCall(in unsigned long callIndex);
+   void resumeCall(in unsigned long callIndex);
+ 
++  nsIDOMDOMRequest getIMEI(in nsIDOMWindow window);
++
+   attribute bool microphoneMuted;
+   attribute bool speakerEnabled;
+ 
+   readonly attribute nsIDOMMozVoicemailStatus voicemailStatus;
+   readonly attribute DOMString voicemailNumber;
+   readonly attribute DOMString voicemailDisplayName;
+ };
+ 
+diff --git a/dom/system/gonk/ril_worker.js b/dom/system/gonk/ril_worker.js
+--- a/dom/system/gonk/ril_worker.js
++++ b/dom/system/gonk/ril_worker.js
+@@ -5790,22 +5790,20 @@ RIL[REQUEST_SET_CALL_FORWARD] =
+ RIL[REQUEST_QUERY_CALL_WAITING] = null;
+ RIL[REQUEST_SET_CALL_WAITING] = function REQUEST_SET_CALL_WAITING(length, options) {
+   options.errorMsg = RIL_ERROR_TO_GECKO_ERROR[options.rilRequestError];
+   this.sendDOMMessage(options);
+ };
+ RIL[REQUEST_SMS_ACKNOWLEDGE] = null;
+ RIL[REQUEST_GET_IMEI] = function REQUEST_GET_IMEI(length, options) {
+   this.IMEI = Buf.readString();
+-  // So far we only send the IMEI back to the DOM if it was requested via MMI.
+-  if (!options.mmi) {
+-    return;
++  if (options.mmi) {
++    options.rilMessageType = "sendMMI";
+   }
+ 
+-  options.rilMessageType = "sendMMI";
+   options.success = options.rilRequestError == 0;
+   options.errorMsg = RIL_ERROR_TO_GECKO_ERROR[options.rilRequestError];
+   if ((!options.success || this.IMEI == null) && !options.errorMsg) {
+     options.errorMsg = GECKO_ERROR_GENERIC_FAILURE;
+   }
+   options.result = this.IMEI;
+   this.sendDOMMessage(options);
+ };
+diff --git a/toolkit/mozapps/update/nsIUpdateService.idl b/toolkit/mozapps/update/nsIUpdateService.idl
+--- a/toolkit/mozapps/update/nsIUpdateService.idl
++++ b/toolkit/mozapps/update/nsIUpdateService.idl
+@@ -310,33 +310,33 @@ interface nsIUpdateCheckListener : nsISu
+    */
+   void onError(in nsIXMLHttpRequest request,
+                in nsIUpdate update);
+ };
+ 
+ /**
+  * An interface describing an object that knows how to check for updates.
+  */
+-[scriptable, uuid(877ace25-8bc5-452a-8586-9c1cf2871994)]
++[scriptable, uuid(03002e6e-e17b-43d5-91a8-23a7440f3dd7)]
+ interface nsIUpdateChecker : nsISupports
+ {
+   /**
+    * Checks for available updates, notifying a listener of the results.
+    * @param   listener
+    *          An object implementing nsIUpdateCheckListener which is notified
+    *          of the results of an update check.
+    * @param   force
+    *          Forces the checker to check for updates, regardless of the
+    *          current value of the user's update settings. This is used by
+    *          any piece of UI that offers the user the imperative option to
+    *          check for updates now, regardless of their update settings.
+    *          force will not work if the system administrator has locked
+    *          the app.update.enabled preference.
+    */
+-  void checkForUpdates(in nsIUpdateCheckListener listener, in boolean force);
++  void checkForUpdates(in nsIUpdateCheckListener listener, in boolean force, in DOMString imei);
+ 
+   /**
+    * Constants for the |stopChecking| function that tell the Checker how long
+    * to stop checking:
+    *
+    * CURRENT_CHECK:     Stops the current (active) check only
+    * CURRENT_SESSION:   Stops all checking for the current session
+    * ANY_CHECKS:        Stops all checking, any session from now on
+diff --git a/toolkit/mozapps/update/nsUpdateService.js b/toolkit/mozapps/update/nsUpdateService.js
+--- a/toolkit/mozapps/update/nsUpdateService.js
++++ b/toolkit/mozapps/update/nsUpdateService.js
+@@ -820,19 +820,19 @@ function isInterruptedUpdate(status) {
+          (status == STATE_PENDING) ||
+          (status == STATE_APPLYING);
+ }
+ #endif // MOZ_WIDGET_GONK
+ 
+ /**
+  * Releases any SDCard mount lock that we might have.
+  *
+- * This once again allows the SDCard to be shared with the PC. 
+- *  
+- * This function was placed outside the #ifdef so that we didn't 
++ * This once again allows the SDCard to be shared with the PC.
++ *
++ * This function was placed outside the #ifdef so that we didn't
+  * need to put #ifdefs around the callers
+  */
+ function releaseSDCardMountLock() {
+ #ifdef MOZ_WIDGET_GONK
+   if (gSDCardMountLock) {
+     gSDCardMountLock.unlock();
+     gSDCardMountLock = null;
+   }
+@@ -2922,18 +2922,21 @@ Checker.prototype = {
+    * The nsIUpdateCheckListener callback
+    */
+   _callback : null,
+ 
+   /**
+    * The URL of the update service XML file to connect to that contains details
+    * about available updates.
+    */
+-  getUpdateURL: function UC_getUpdateURL(force) {
++  getUpdateURL: function UC_getUpdateURL(force, imei) {
+     this._forced = force;
++    if (imei) {
++      this._imei = imei;
++    }
+ 
+     // Use the override URL if specified.
+     var url = getPref("getCharPref", PREF_APP_UPDATE_URL_OVERRIDE, null);
+ 
+     // Otherwise, construct the update URL from component parts.
+     if (!url) {
+       try {
+         url = Services.prefs.getDefaultBranch(null).
+@@ -2964,33 +2967,37 @@ Checker.prototype = {
+ 
+ #ifdef MOZ_WIDGET_GONK
+     url = url.replace(/%PRODUCT_MODEL%/g, gProductModel);
+ #endif
+ 
+     if (force)
+       url += (url.indexOf("?") != -1 ? "&" : "?") + "force=1";
+ 
++    if (this._imei)
++      url += (url.indexOf("?") != -1 ? "&" : "?") + "imei=" + this._imei;
++
+     LOG("Checker:getUpdateURL - update URL: " + url);
+     return url;
+   },
+ 
+   /**
+    * See nsIUpdateService.idl
+    */
+-  checkForUpdates: function UC_checkForUpdates(listener, force) {
++  checkForUpdates: function UC_checkForUpdates(listener, force, imei) {
+     LOG("Checker: checkForUpdates, force: " + force);
+     if (!listener)
+       throw Cr.NS_ERROR_NULL_POINTER;
+ 
+     Services.obs.notifyObservers(null, "update-check-start", null);
+ 
+-    var url = this.getUpdateURL(force);
+-    if (!url || (!this.enabled && !force))
++    var url = this.getUpdateURL(force, imei);
++    if (!url || (!this.enabled && !force)) {
+       return;
++    }
+ 
+     this._request = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"].
+                     createInstance(Ci.nsISupports);
+     // This is here to let unit test code override XHR
+     if (this._request.wrappedJSObject) {
+       this._request = this._request.wrappedJSObject;
+     }
+     this._request.open("GET", url, true);

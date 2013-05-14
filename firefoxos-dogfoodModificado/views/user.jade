@@ -1,0 +1,85 @@
+extends layout
+
+block content
+  #container.container
+    #display
+      dl.dl-horizontal
+        if user.first_name
+          dt= "First name"
+          dd #{user.first_name}
+        if user.last_name
+          dt= "Last name"
+          dd #{user.last_name}
+        if user.email
+          dt= "Email"
+          dd #{user.email}
+        if user.location
+          dt= "Location"
+          dd #{user.location}
+        if user.primary_phone
+          dt= "Primary phone"
+          dd= "Yes"
+        if user.sim
+          dt= "Dogfooder SIM"
+          dd= "Yes"
+        if user.carrier
+          dt= "Carrier"
+          dd #{user.carrier}
+        if user.device.imei
+          dt= "Device"
+          dd #{user.device.imei}
+
+    if (feedback.length)
+      div.accordion#accordion2
+        div.accordion-group
+          div.accordion-heading
+            a(data-toggle="collapse", data-parent="#accordion2", href="#collapseOne").accordion-toggle Comments
+          div.accordion-body(class="collapse")#collapseOne
+            div.accordion-inner
+              table.table
+                thead
+                  tr
+                    th Comment
+                    th Build id
+                    th Date added
+                    th
+                tbody
+                  each comment in feedback
+                    tr
+                      td= comment.comment
+                      td= comment.build_id
+                      td= comment.date_added
+                      td
+                        abbr(title="Delete comment")
+                          a(href="/feedback/delete/" + comment._id + "/")
+                            i.icon-trash
+    else
+      p No feedback
+
+    if (updates.length)
+      div.accordion#accordion2
+        div.accordion-group
+          div.accordion-heading
+            a(data-toggle="collapse", data-parent="#accordion2", href="#collapseTwo").accordion-toggle Updates
+          div.accordion-body(class="collapse")#collapseTwo
+            div.accordion-inner
+              table.table
+                thead
+                  tr
+                    th Channel
+                    th From build id
+                    th To build id
+                    th From version
+                    th To version
+                    th Date
+                tbody
+                  each update in updates
+                    tr
+                      td= update.channel
+                      td= update.from_build_id
+                      td= update.to_build_id
+                      td= update.from_version
+                      td= update.to_version
+                      td= update.date_added
+    else
+      p No updates

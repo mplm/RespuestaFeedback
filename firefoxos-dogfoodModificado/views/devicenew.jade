@@ -1,0 +1,23 @@
+extends layout
+
+block content
+  script(src="/js/popovers.js", defer)
+  #container.container
+    if locals.msg
+      #message.alert.alert-error msg
+    #display
+      form(method="post", action="/device/new")
+        div.row
+          div.span3.offset1
+            label(for="imei") Device's IMEI
+            input(id="molon", class="input-block-level", type="text", name="imei", placeholder="IMEI", required, rel="popover", data-content="Please, insert your unique phone identifier, IMEI", data-original-title="IMEI")
+          div.span3.offset1
+            label(for="email") Select user
+            select(name="email", class="input-block-level", placeholder="User", required, rel="popover", data-content="Please, select the user that will use this device", data-original-title="User mail")
+              if (users)
+                each user in users
+                  option(value=user.email) #{user.email}
+        div.row
+          div.span8.form-actions
+            button(type="reset", class="btn") Reset
+            button(type="submit", class="btn btn-info") Submit & Deploy

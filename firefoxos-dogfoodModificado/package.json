@@ -1,0 +1,54 @@
+{
+  "name": "firefox-os-dogfoding-pdi",
+  "version": "0.0.1",
+  "author": "Telefónica Digital. 2013",
+  "description": "A feedback server for Firefox OS dogfooders at Telefónica Digital",
+  "contributors": [
+    {
+      "name": "Fernando Jiménez Moreno",
+      "email": "ferjm@tid.es"
+    },
+    {
+      "name": "Guillermo López Leal",
+      "email": "gll@tid.es"
+    },
+    {
+      "name": "Arnau March",
+      "email": "arnau@tid.es"
+    },
+    {
+      "name": "Mario Pierre-Louis",
+      "email": "b.mplm@tid.es"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ferjm/firefoxos-dogfood"
+  },
+  "bugs": {
+    "url": "https://github.com/ferjm/firefoxos-dogfood/issues"
+  },
+  "keywords": [
+    "firefox os",
+    "dogfooding"
+  ],
+  "dependencies": {
+    "express": "3.0.x",
+    "jade": "0.28.x",
+    "mongoose": "3.5.x",
+    "passport": "0.1.x",
+    "passport-local": "0.1.x",
+    "async": "*",
+    "excel": "*",
+    "nodemailer":"*"
+  },
+  "devDependencies": {
+    "vows": "0.6.x"
+  },
+  "engines": {
+    "node": ">=0.8.x"
+  },
+  "scripts": {
+    "test": "./node_modules/.bin/vows test/functional/*-test.js --spec ; ./node_modules/.bin/vows test/unit/*-test.js --spec"
+  }
+}
